@@ -74,6 +74,21 @@ async def create_meditation_session(payload: ContextPayload):
         )
 
 
+from app.core.session_audio import audio_manager
+from fastapi import Response
+
+@router.get("/audio/{session_id}/{seq_id}")
+async def get_meditation_audio(session_id: str, seq_id: int):
+    """
+    Retrieve cached audio chunk for a session.
+    """
+    audio_data = audio_manager.get_chunk(session_id, seq_id)
+    if not audio_data:
+        raise HTTPException(status_code=404, detail="Audio chunk not found")
+        
+    return Response(content=audio_data, media_type="audio/mpeg")
+
+
 @router.post("/session/stream")
 async def create_meditation_session_stream(payload: ContextPayload):
     """
@@ -269,6 +284,13 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
     
     async def generate():
         try:
+            # Generate a unique session ID for this stream if not present
+            import uuid
+            session_id = str(uuid.uuid4())
+            
+            # Send session start event with ID
+            yield f"data: {json.dumps({'type': 'session_start', 'session_id': session_id})}\n\n"
+            
             logger.info("Starting audio-text-stream generation for user: %s", payload.user_id)
             sentence_buffer = ""
             sentence_count = 0
@@ -329,8 +351,8 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
                         audio_data = b""
                         # Use internal retry loop to ensure buffer is cleared on retry
                         async for attempt in AsyncRetrying(
-                            stop=stop_after_attempt(3),
-                            wait=wait_exponential(multiplier=1, min=1, max=10),
+                            stop=stop_after_attempt(5),
+                            wait=wait_exponential(multiplier=1, min=2, max=10),
                             retry=retry_if_exception_type(Exception),
                             reraise=True
                         ):
@@ -339,18 +361,36 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
                                 async for audio_chunk in audio_service.generate_audio_from_text(sentence):
                                     if audio_chunk.data:
                                         audio_data += audio_chunk.data
+                                
+                                # CRITICAL FIX: audio_service suppresses exceptions. 
+                                # If we get no data, it likely failed. Manually raise to trigger retry.
+                                if not audio_data:
+                                    logger.warning("TTS returned empty data (likely rate limit), triggering retry...")
+                                    raise Exception("Empty audio data from TTS provider")
                         
                         logger.info("TTS generated %d bytes for sentence %d", len(audio_data), sentence_count)
                         
                         if audio_data:
-                            # Encode audio as base64 and send with sequence ID
-                            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
-                            yield f"data: {json.dumps({'seq': sentence_count, 'type': 'audio', 'content': audio_b64, 'text': sentence})}\n\n"
+                            # CRITICAL CHANGE: Store audio and send Ref
+                            audio_manager.store_chunk(session_id, sentence_count, audio_data)
+                            
+                            # Construct Audio URL
+                            # NOTE: In production, use absolute URL or ensure frontend knows base
+                            audio_url = f"/api/v1/meditation/audio/{session_id}/{sentence_count}"
+                            
+                            event_data = {
+                                'seq': sentence_count, 
+                                'type': 'audio_ref', 
+                                'url': audio_url,
+                                'text': sentence
+                            }
+                            yield f"data: {json.dumps(event_data)}\n\n"
                         else:
                             logger.error("No audio data generated for sentence %d", sentence_count)
                         
                     except Exception as e:
-                        logger.exception("TTS failed for sentence %d", sentence_count)
+                        logger.error("Audio generation failed for sentence %d: %s", sentence_count, e)
+                        # We still yield text even if audio fails
             
             # Process any remaining text in buffer
             if sentence_buffer.strip():

@@ -114,10 +114,18 @@ export default function Home() {
                             if (data.type === "text") {
                                 setCurrentSubtitle(data.content)
                                 setAllText(prev => prev + data.content + " ")
-                            } else if (data.type === "audio") {
-                                // Add audio to queue
-                                console.log('Processing audio for seq:', data.seq)
-                                await audioPlayerRef.current?.addAudioChunk(data.content)
+                            } else if (data.type === "audio_ref") {
+                                // Add audio URL to queue
+                                console.log('Processing audio ref for seq:', data.seq, data.url)
+
+                                // Fix URL for Next.js proxy
+                                // Backend sends /api/v1/..., Proxy expects /api/... maps to /api/v1/...
+                                let url = data.url
+                                if (url.startsWith("/api/v1")) {
+                                    url = url.replace("/api/v1", "/api")
+                                }
+
+                                await audioPlayerRef.current?.addAudioUrl(url)
                             } else if (data.type === "pause") {
                                 // Handle pause
                                 await new Promise(resolve => setTimeout(resolve, data.duration * 1000))
