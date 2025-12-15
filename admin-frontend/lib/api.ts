@@ -53,3 +53,41 @@ export const streamMeditation = async (
         }
     }
 }
+
+// Types for admin dashboard
+export interface Stats {
+    document_count: number
+    chunk_count: number
+    collection_name?: string
+    persist_directory?: string
+}
+
+export interface Document {
+    id: string
+    name: string
+    category: string
+    last_modified: number
+}
+
+// API object for admin operations
+export const api = {
+    async getStats(): Promise<Stats> {
+        const response = await fetch("/api/admin/stats")
+        if (!response.ok) throw new Error("Failed to fetch stats")
+        return response.json()
+    },
+
+    async getDocuments(): Promise<Document[]> {
+        const response = await fetch("/api/admin/documents")
+        if (!response.ok) throw new Error("Failed to fetch documents")
+        return response.json()
+    },
+
+    async reimportKnowledgeBase(): Promise<{ status: string; message: string }> {
+        const response = await fetch("/api/admin/vectordb/reimport", {
+            method: "POST"
+        })
+        if (!response.ok) throw new Error("Failed to trigger re-import")
+        return response.json()
+    }
+}

@@ -4,16 +4,23 @@ Flowist - Context-Aware Meditation Agent
 Main FastAPI application entry point.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.api.admin.router import router as admin_router
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
 
 app = FastAPI(
     title="Flowist API",
     description="Context-aware meditation agent API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS Configuration

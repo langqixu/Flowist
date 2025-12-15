@@ -1,78 +1,100 @@
+interface AudioItem {
+    buffer: AudioBuffer
+    text: string
+    duration: number
+}
 
 export class AudioPlayer {
     public audioContext: AudioContext
-    public audioQueue: AudioBuffer[] = []
+    public audioQueue: AudioItem[] = []
     public isPlaying = false
     private currentSource: AudioBufferSourceNode | null = null
     private processedUrls = new Set<string>() // Deduplication
     public onStatusChange?: (isPlaying: boolean) => void
+    public onSubtitleChange?: (text: string) => void
 
-    constructor(onStatusChange?: (isPlaying: boolean) => void) {
+    private isDestroyed = false
+
+    constructor(
+        onStatusChange?: (isPlaying: boolean) => void,
+        onSubtitleChange?: (text: string) => void
+    ) {
         this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
         this.onStatusChange = onStatusChange
+        this.onSubtitleChange = onSubtitleChange
         this.onStatusChange?.(false)
     }
 
     async resumeContext() {
+        if (this.isDestroyed) return
         if (this.audioContext.state === 'suspended') {
-            console.log('Resuming audio context')
             await this.audioContext.resume()
-            console.log('Audio context resumed, state:', this.audioContext.state)
         }
     }
 
-    async addAudioUrl(url: string) {
+    async addAudioUrl(url: string, text: string = "", duration: number = 0) {
+        if (this.isDestroyed) return
+
         // Strict Deduplication
         if (this.processedUrls.has(url)) {
-            console.log('Skipping duplicate audio URL:', url)
             return
         }
         this.processedUrls.add(url)
 
-        console.log('Fetching audio from URL:', url)
-
         try {
             const response = await fetch(url)
             if (!response.ok) {
-                console.error('Failed to fetch audio:', response.statusText)
+                console.error('[AudioPlayer] Failed to fetch audio:', response.statusText)
                 return
             }
 
+            if (this.isDestroyed) return
+
             const arrayBuffer = await response.arrayBuffer()
-            console.log('Fetched audio bytes:', arrayBuffer.byteLength)
+            if (this.isDestroyed) return
 
             const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer)
-            console.log('Audio decoded successfully, duration:', audioBuffer.duration)
 
-            this.audioQueue.push(audioBuffer)
+            if (this.isDestroyed) return
+
+            this.audioQueue.push({
+                buffer: audioBuffer,
+                text,
+                duration
+            })
 
             if (!this.isPlaying) {
                 this.playNext()
             }
         } catch (error) {
-            console.error('Failed to process audio URL:', error)
+            console.error('[AudioPlayer] Failed to process audio URL:', error)
         }
     }
 
     private playNext() {
+        if (this.isDestroyed) return
+
         if (this.audioQueue.length === 0) {
             this.isPlaying = false
             this.onStatusChange?.(false)
+            this.onSubtitleChange?.("") // Clear subtitle when done
             return
         }
 
+        const item = this.audioQueue.shift()!
         this.isPlaying = true
         this.onStatusChange?.(true)
 
-        const buffer = this.audioQueue.shift()!
+        // SYNC POINT: Update subtitle exactly when audio starts
+        this.onSubtitleChange?.(item.text)
 
         // Create source
         const source = this.audioContext.createBufferSource()
-        source.buffer = buffer
+        source.buffer = item.buffer
         source.connect(this.audioContext.destination)
 
         source.onended = () => {
-            console.log('Audio chunk ended, playing next')
+            if (this.isDestroyed) return
             this.playNext()
         }
 
@@ -85,16 +107,22 @@ export class AudioPlayer {
     }
 
     cleanup() {
+        this.isDestroyed = true
+
         if (this.currentSource) {
             this.currentSource.stop()
         }
-        // Don't close context on simple stop, usually we keep it for reuse unless unmounting
-        // But for cleanup (unmount), we close.
-        // Let's decide: stop() clears queue and stops playing. cleanup() closes context.
+
+        try {
+            this.audioContext.close()
+        } catch (e) {
+            console.error('Error closing audio context:', e)
+        }
 
         this.audioQueue = []
         this.processedUrls.clear()
         this.isPlaying = false
         this.onStatusChange?.(false)
+        this.onSubtitleChange?.("")
     }
 }

@@ -33,7 +33,7 @@ export default function VectorDBPage() {
             setImporting(true)
             toast.info("Starting knowledge base import...")
 
-            const result = await api.reimport()
+            const result = await api.reimportKnowledgeBase()
 
             if (result.status === "success") {
                 toast.success("Import completed successfully")

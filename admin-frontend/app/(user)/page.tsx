@@ -34,7 +34,10 @@ export default function Home() {
 
     useEffect(() => {
         // Initialize audio player on client side
-        audioPlayerRef.current = new AudioPlayer((playing) => setIsPlaying(playing))
+        audioPlayerRef.current = new AudioPlayer(
+            (playing) => setIsPlaying(playing),
+            (subtitle) => setCurrentSubtitle(subtitle) // Sync subtitle to audio start
+        )
 
         return () => {
             if (audioPlayerRef.current) {
@@ -60,10 +63,13 @@ export default function Home() {
 
         // Start SSE stream
         try {
-            console.log('[DEBUG] Initiating fetch to /api/meditation/session/audio-text-stream')
-            const response = await fetch("/api/meditation/session/audio-text-stream", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
+            // Bypass Next.js proxy to avoid buffering latency
+            // In production this should be an env var, for local dev direct access is fine
+            const response = await fetch('http://localhost:8000/api/v1/meditation/session/audio-text-stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                 body: JSON.stringify({
                     user_id: "demo_user",
                     user_feeling_input: input,
@@ -75,32 +81,23 @@ export default function Home() {
                 }),
             })
 
-            console.log('[DEBUG] Fetch response status:', response.status, response.statusText)
-            console.log('[DEBUG] Response headers:', response.headers.get('content-type'))
-
             if (!response.body) {
-                console.error('[DEBUG] No response body!')
+                console.error('No response body!')
                 return
             }
 
-            console.log('[DEBUG] Starting SSE stream reader')
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ""
-            const processedMessages = new Set<string>()  // Dedup using seq:type
-            let messageCount = 0
+            const processedMessages = new Set<string>()
 
             while (true) {
                 const { done, value } = await reader.read()
-                if (done) {
-                    console.log('[DEBUG] Reader done, total messages:', messageCount)
-                    break
-                }
+                if (done) break
 
                 // Decode and append to buffer
                 const chunk = decoder.decode(value, { stream: true })
                 buffer += chunk
-                console.log('[DEBUG] Received chunk, buffer size:', buffer.length)
 
                 // Split by double newline (SSE message delimiter)
                 const messages = buffer.split("\n\n")
@@ -108,21 +105,16 @@ export default function Home() {
                 // Keep the last incomplete message in buffer
                 buffer = messages.pop() || ""
 
-                console.log('[DEBUG] Split into', messages.length, 'messages')
-
                 for (const message of messages) {
                     if (message.startsWith("data: ")) {
-                        messageCount++
                         try {
                             const data = JSON.parse(message.slice(6))
-                            console.log('[DEBUG] Parsed message #' + messageCount + ':', data.type, data.seq || 'no-seq')
 
                             // Create unique message key
                             const msgKey = `${data.seq}:${data.type}`
 
                             // Dedup check
                             if (data.seq && processedMessages.has(msgKey)) {
-                                console.log('[DEBUG] Skipping duplicate message:', msgKey)
                                 continue
                             }
                             if (data.seq) {
@@ -130,34 +122,27 @@ export default function Home() {
                             }
 
                             if (data.type === "text") {
-                                console.log('[DEBUG] Processing text:', data.content)
-                                setCurrentSubtitle(data.content)
+                                // Only update transcript, NOT subtitle (sync with audio instead)
                                 setAllText(prev => prev + data.content + " ")
                             } else if (data.type === "audio_ref") {
-                                console.log('[DEBUG] Processing audio_ref for seq:', data.seq, 'URL:', data.url)
-
-                                // Fix URL for Next.js proxy
+                                // Fix URL for Next.js proxy -> Use Direct Backend URL
                                 let url = data.url
                                 if (url.startsWith("/api/v1")) {
-                                    url = url.replace("/api/v1", "/api")
+                                    url = `http://localhost:8000${url}`
                                 }
 
-                                console.log('[DEBUG] About to call addAudioUrl with:', url)
-                                await audioPlayerRef.current?.addAudioUrl(url)
+                                // Queue audio with metadata for exact sync
+                                await audioPlayerRef.current?.addAudioUrl(url, data.text, data.duration)
                             } else if (data.type === "pause") {
-                                console.log('[DEBUG] Processing pause:', data.duration, 'seconds')
+                                // Clear subtitle slightly before pause duration
                                 await new Promise(resolve => setTimeout(resolve, data.duration * 1000))
                             } else if (data.type === "done") {
-                                console.log('[DEBUG] Session done')
-                                setCurrentSubtitle("")
                                 setIsSubmitting(false)
                                 isSubmittingRef.current = false
                             }
                         } catch (error) {
-                            console.error("[DEBUG] Failed to parse SSE message:", error, message.slice(0, 100))
+                            console.error("Failed to parse SSE message:", error)
                         }
-                    } else {
-                        console.log('[DEBUG] Non-data message:', message.slice(0, 50))
                     }
                 }
             }
@@ -173,6 +158,9 @@ export default function Home() {
         audioPlayerRef.current?.stop()
         setInput("")
         setCurrentSubtitle("")
+        // CRITICAL FIX: Reset submission state to allow new sessions
+        setIsSubmitting(false)
+        isSubmittingRef.current = false
     }
 
     return (
@@ -264,8 +252,15 @@ export default function Home() {
                                 }}
                             />
                             <button
-                                onClick={handleStartSession}
-                                disabled={!input.trim()}
+                                onClick={() => {
+                                    console.log('[DEBUG] Send button clicked', {
+                                        input: input.trim(),
+                                        isSubmitting,
+                                        isSubmittingRef: isSubmittingRef.current
+                                    })
+                                    handleStartSession()
+                                }}
+                                disabled={!input.trim() || isSubmitting}
                                 className="absolute bottom-6 right-6 p-3 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:scale-105 disabled:opacity-50 disabled:scale-100 transition-all shadow-lg"
                             >
                                 <Send size={20} />

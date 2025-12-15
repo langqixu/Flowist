@@ -10,4 +10,4 @@ echo "================================"
 echo ""
 
 cd "$(dirname "$0")"
-uvicorn app.main:app --reload
+python3 -m uvicorn app.main:app --reload

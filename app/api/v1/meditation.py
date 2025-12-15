@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 import json
 import base64
 import logging
+import time
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Configure logging
@@ -224,7 +225,8 @@ async def create_meditation_audio_session(payload: ContextPayload):
         generate_audio(),
         media_type="audio/mpeg",
         headers={
-            "Cache-Control": "no-cache"
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
         }
     )
 
@@ -288,6 +290,9 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
             import uuid
             session_id = str(uuid.uuid4())
             
+            start_time = time.time()
+            logger.info(f"[SSE] Stream started, session: {session_id}")
+            
             # Send session start event with ID
             yield f"data: {json.dumps({'type': 'session_start', 'session_id': session_id})}\n\n"
             
@@ -328,10 +333,12 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
                     
                     processed_hashes.add(sentence_hash)
                     sentence_count += 1
-                    logger.info("Processing sentence %d: %s", sentence_count, sentence[:30])
+                    elapsed = time.time() - start_time
+                    logger.info(f"[SSE] Processing sentence {sentence_count} at {elapsed:.2f}s: {sentence[:30]}")
                     
                     # Send text with sequence ID for frontend dedup
                     yield f"data: {json.dumps({'seq': sentence_count, 'type': 'text', 'content': sentence})}\n\n"
+                    logger.info(f"[SSE] Yielded text event for seq {sentence_count}")
                     
                     # Remove processed sentence from buffer
                     sentence_buffer = sentence_buffer[match.end():]
@@ -374,15 +381,27 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
                             # CRITICAL CHANGE: Store audio and send Ref
                             audio_manager.store_chunk(session_id, sentence_count, audio_data)
                             
+                            # Calculate exact audio duration using mutagen
+                            try:
+                                from mutagen.mp3 import MP3
+                                from io import BytesIO
+                                audio_info = MP3(BytesIO(audio_data))
+                                audio_duration = audio_info.info.length
+                                logger.info(f"Calculated exact duration: {audio_duration:.2f}s")
+                            except Exception as e:
+                                logger.error(f"Failed to calculate exact duration with mutagen: {e}")
+                                # Fallback to bitrate estimation
+                                audio_duration = len(audio_data) / (128000 / 8)
+                            
                             # Construct Audio URL
-                            # NOTE: In production, use absolute URL or ensure frontend knows base
                             audio_url = f"/api/v1/meditation/audio/{session_id}/{sentence_count}"
                             
                             event_data = {
                                 'seq': sentence_count, 
                                 'type': 'audio_ref', 
                                 'url': audio_url,
-                                'text': sentence
+                                'text': sentence,
+                                'duration': audio_duration  # Exact duration
                             }
                             yield f"data: {json.dumps(event_data)}\n\n"
                         else:
@@ -412,6 +431,7 @@ async def create_meditation_audio_text_stream(payload: ContextPayload):
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
     )
 

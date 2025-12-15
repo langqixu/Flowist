@@ -163,8 +163,20 @@ class MiniMaxTTSProvider(TTSProvider):
                             
                         # Extract audio data (hex string)
                         if "data" in data and "audio" in data["data"]:
+                            # CRITICAL FIX: Minimax sends a final chunk with "extra_info" that contains
+                            # the concatenated audio of the entire stream (or a large buffer).
+                            # We must ignore this chunk to prevent double playback.
+                            if "extra_info" in data:
+                                print(f"DEBUG: Ignoring final summary chunk ({len(data['data']['audio'])} hex chars)", flush=True)
+                                continue
+                                
                             hex_audio = data["data"]["audio"]
                             if hex_audio:
+                                # CRITICAL FIX: Minimax sends a final chunk with "extra_info"
+                                # that contains the full concatenated audio. Skip it to avoid duplication.
+                                if "extra_info" in data:
+                                    continue
+                                
                                 chunk_count += 1
                                 yield bytes.fromhex(hex_audio)
                                 
