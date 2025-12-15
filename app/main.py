@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Flowist API",
     description="Context-aware meditation agent API",
-    version="1.0.0",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
