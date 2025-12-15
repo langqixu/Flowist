@@ -60,6 +60,7 @@ export default function Home() {
 
         // Start SSE stream
         try {
+            console.log('[DEBUG] Initiating fetch to /api/meditation/session/audio-text-stream')
             const response = await fetch("/api/meditation/session/audio-text-stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -74,19 +75,32 @@ export default function Home() {
                 }),
             })
 
-            if (!response.body) return
+            console.log('[DEBUG] Fetch response status:', response.status, response.statusText)
+            console.log('[DEBUG] Response headers:', response.headers.get('content-type'))
 
+            if (!response.body) {
+                console.error('[DEBUG] No response body!')
+                return
+            }
+
+            console.log('[DEBUG] Starting SSE stream reader')
             const reader = response.body.getReader()
             const decoder = new TextDecoder()
             let buffer = ""
             const processedMessages = new Set<string>()  // Dedup using seq:type
+            let messageCount = 0
 
             while (true) {
                 const { done, value } = await reader.read()
-                if (done) break
+                if (done) {
+                    console.log('[DEBUG] Reader done, total messages:', messageCount)
+                    break
+                }
 
                 // Decode and append to buffer
-                buffer += decoder.decode(value, { stream: true })
+                const chunk = decoder.decode(value, { stream: true })
+                buffer += chunk
+                console.log('[DEBUG] Received chunk, buffer size:', buffer.length)
 
                 // Split by double newline (SSE message delimiter)
                 const messages = buffer.split("\n\n")
@@ -94,17 +108,21 @@ export default function Home() {
                 // Keep the last incomplete message in buffer
                 buffer = messages.pop() || ""
 
+                console.log('[DEBUG] Split into', messages.length, 'messages')
+
                 for (const message of messages) {
                     if (message.startsWith("data: ")) {
+                        messageCount++
                         try {
                             const data = JSON.parse(message.slice(6))
+                            console.log('[DEBUG] Parsed message #' + messageCount + ':', data.type, data.seq || 'no-seq')
 
                             // Create unique message key
                             const msgKey = `${data.seq}:${data.type}`
 
                             // Dedup check
                             if (data.seq && processedMessages.has(msgKey)) {
-                                console.log('Skipping duplicate message:', msgKey)
+                                console.log('[DEBUG] Skipping duplicate message:', msgKey)
                                 continue
                             }
                             if (data.seq) {
@@ -112,38 +130,41 @@ export default function Home() {
                             }
 
                             if (data.type === "text") {
+                                console.log('[DEBUG] Processing text:', data.content)
                                 setCurrentSubtitle(data.content)
                                 setAllText(prev => prev + data.content + " ")
                             } else if (data.type === "audio_ref") {
-                                // Add audio URL to queue
-                                console.log('Processing audio ref for seq:', data.seq, data.url)
+                                console.log('[DEBUG] Processing audio_ref for seq:', data.seq, 'URL:', data.url)
 
                                 // Fix URL for Next.js proxy
-                                // Backend sends /api/v1/..., Proxy expects /api/... maps to /api/v1/...
                                 let url = data.url
                                 if (url.startsWith("/api/v1")) {
                                     url = url.replace("/api/v1", "/api")
                                 }
 
+                                console.log('[DEBUG] About to call addAudioUrl with:', url)
                                 await audioPlayerRef.current?.addAudioUrl(url)
                             } else if (data.type === "pause") {
-                                // Handle pause
+                                console.log('[DEBUG] Processing pause:', data.duration, 'seconds')
                                 await new Promise(resolve => setTimeout(resolve, data.duration * 1000))
                             } else if (data.type === "done") {
+                                console.log('[DEBUG] Session done')
                                 setCurrentSubtitle("")
                                 setIsSubmitting(false)
-                                isSubmittingRef.current = false // Reset synchronous lock
+                                isSubmittingRef.current = false
                             }
                         } catch (error) {
-                            console.error("Failed to parse SSE message:", error, message.slice(0, 100))
+                            console.error("[DEBUG] Failed to parse SSE message:", error, message.slice(0, 100))
                         }
+                    } else {
+                        console.log('[DEBUG] Non-data message:', message.slice(0, 50))
                     }
                 }
             }
         } catch (error) {
             console.error("Session failed:", error)
             setIsSubmitting(false)
-            isSubmittingRef.current = false // Reset synchronous lock on error
+            isSubmittingRef.current = false
         }
     }
 
