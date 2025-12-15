@@ -243,6 +243,7 @@ export default function Home() {
                                 }}
                             />
                             <button
+                                onClick={handleStartSession}
                                 disabled={!input.trim()}
                                 className="absolute bottom-6 right-6 p-3 rounded-full bg-zinc-900 dark:bg-zinc-100 text-white dark:text-zinc-900 hover:scale-105 disabled:opacity-50 disabled:scale-100 transition-all shadow-lg"
                             >
